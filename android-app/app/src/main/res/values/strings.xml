@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">WeChat RPA</string>
+    <string name="accessibility_service_description">
+        WeChat RPA 无障碍服务。
+        本服务通过Android官方无障碍框架，自动化操作企业微信/微信客户端，
+        实现收发消息、群管理等功能。
+        本服务不会收集或上传任何个人隐私数据。
+    </string>
+</resources>

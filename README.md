@@ -1,133 +1,362 @@
-# Android 微信/企业微信 RPA 账号托管技术栈与Demo
+# WeChat RPA - 基于 AccessibilityService 的企业微信自动化方案
 
-本项目旨在提供一个基于 Android 客户端的微信和企业微信 RPA（机器人流程自动化）账号托管解决方案。方案使用 Python 和 `uiautomator2` 库，通过模拟人类在屏幕上的操作来实现自动化，不涉及任何协议破解，但强依赖于客户端的 UI 布局。
+> 一个基于 Android 官方无障碍服务（AccessibilityService）的企业微信/微信自动化框架，支持收发消息、自动拉群、群管理等功能。采用经过社区验证的最佳实践架构。
 
-**免责声明：** 本项目仅用于技术研究和学习目的。自动化操作微信/企业微信可能违反其用户协议，存在被限制功能甚至封号的风险。使用者必须自行承担所有风险和后果。**强烈不建议将此方案用于任何商业或关键业务场景。**
+**免责声明：** 本项目仅用于技术研究和学习目的。自动化操作微信/企业微信可能违反其用户协议，存在被限制功能甚至封号的风险。使用者必须自行承担所有风险和后果。
+
+## 为什么选择 AccessibilityService？
+
+本项目从 `uiautomator2` 方案升级为 **AccessibilityService** 方案，这是经过 [WorkTool](https://github.com/gallonyin/worktool)（3k+ Stars）等多个成功开源项目验证的最佳实践。
+
+| 对比维度 | AccessibilityService（本方案） | uiautomator2（旧方案） |
+|---------|-------------------------------|----------------------|
+| **稳定性** | 高，系统级常驻服务，长时间运行稳定 | 低，atx-agent 守护进程易断连 |
+| **部署方式** | 独立 APK，安装即用，无需电脑持续连接 | 需要 PC 端 Python 通过 ADB 持续驱动 |
+| **响应速度** | 快，进程内直接调用系统 API | 慢，跨进程 HTTP + ADB 多层通信 |
+| **兼容性** | 99%+ Android 7.0+ 设备 | 依赖 ADB 连接和 atx-agent 版本 |
+| **合规性** | 基于官方无障碍 SDK | 基于测试框架，非设计用途 |
+| **多设备扩展** | 每台设备独立运行，天然支持集群 | 每台设备需一个 PC 端进程驱动 |
+
+## 系统架构
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    外部系统 / 开发者                       │
+│              (CRM、客服系统、自定义脚本)                    │
+└──────────────────────┬──────────────────────────────────┘
+                       │ HTTP API (端口 8080)
+                       ▼
+┌─────────────────────────────────────────────────────────┐
+│              Python 服务端 (FastAPI)                      │
+│         多设备管理 · 任务调度 · 统一API网关                 │
+│         Swagger文档: http://localhost:8080/docs           │
+└──────────────────────┬──────────────────────────────────┘
+                       │ HTTP API (局域网, 端口 9527)
+                       ▼
+┌─────────────────────────────────────────────────────────┐
+│           Android 设备 (手机/云手机)                       │
+│  ┌─────────────────────────────────────────────────┐    │
+│  │         RPA App (本项目 Android 端)               │    │
+│  │                                                   │    │
+│  │  HttpServerService ──→ TaskController             │    │
+│  │  (NanoHTTPD:9527)      (任务队列,串行执行)          │    │
+│  │                             │                     │    │
+│  │                             ▼                     │    │
+│  │                      WeworkOperator               │    │
+│  │                      (业务逻辑封装)                 │    │
+│  │                             │                     │    │
+│  │                             ▼                     │    │
+│  │                 RpaAccessibilityService            │    │
+│  │                 (控件查找 · 模拟点击 · 手势)         │    │
+│  └─────────────────────────────────────────────────┘    │
+│                          │                               │
+│                          ▼                               │
+│  ┌─────────────────────────────────────────────────┐    │
+│  │            企业微信 / 微信 客户端                  │    │
+│  └─────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────┘
+```
 
 ## 项目结构
 
 ```
 wechat-rpa-demo/
-├── config/                  # 配置文件
-│   ├── __init__.py
-│   └── settings.py          # 核心配置，包括设备序列号、包名、控件ID等
-├── common/                  # 通用基础模块
-│   ├── __init__.py
-│   ├── base_bot.py          # RPA机器人基类，封装通用UI操作
-│   ├── device_manager.py    # 设备管理器，封装ADB命令
-│   └── utils.py             # 工具函数（日志、延迟等）
-├── wechat/                  # 微信Bot模块
-│   ├── __init__.py
-│   └── wechat_bot.py        # 微信RPA核心逻辑
-├── wework/                  # 企业微信Bot模块
-│   ├── __init__.py
-│   └── wework_bot.py        # 企业微信RPA核心逻辑
-├── docs/                    # 文档目录
-│   └── ...
-├── demo_wechat.py           # 微信收发消息演示脚本
-├── demo_wework.py           # 企业微信收发消息演示脚本
-├── tool_calibrate_ids.py    # UI控件ID校准工具
-├── requirements.txt         # Python依赖
-└── README.md                # 本文档
+│
+├── android-app/                              # ===== Android 端应用 =====
+│   └── app/
+│       ├── build.gradle                      # Gradle 构建配置
+│       └── src/main/
+│           ├── AndroidManifest.xml            # 应用清单
+│           ├── java/com/wechatrpa/
+│           │   ├── RpaApplication.kt          # Application 入口
+│           │   ├── activity/
+│           │   │   └── MainActivity.kt        # 主界面（状态展示、服务控制）
+│           │   ├── service/
+│           │   │   ├── RpaAccessibilityService.kt  # [核心] 无障碍服务
+│           │   │   ├── WeworkOperator.kt            # [核心] 企微操作封装
+│           │   │   ├── TaskController.kt            # 任务队列控制器
+│           │   │   └── HttpServerService.kt         # 内嵌HTTP服务器
+│           │   ├── model/
+│           │   │   └── Models.kt              # 数据模型定义
+│           │   └── utils/
+│           │       └── NodeHelper.kt          # 控件查找工具类
+│           └── res/
+│               ├── xml/accessibility_service_config.xml
+│               └── values/strings.xml
+│
+├── server/                                   # ===== Python 服务端 =====
+│   ├── api/
+│   │   └── app.py                            # FastAPI 应用（统一API网关）
+│   ├── core/
+│   │   ├── device_client.py                  # 设备API客户端（Python SDK）
+│   │   └── device_manager.py                 # 多设备管理器
+│   ├── config/
+│   │   └── __init__.py                       # 服务端配置
+│   ├── demo.py                               # 交互式使用示例
+│   └── requirements.txt                      # Python 依赖
+│
+└── README.md                                 # 本文档
 ```
 
-## 技术栈核心
+## 快速开始
 
-| 技术点 | 工具/库 | 作用 |
-| :--- | :--- | :--- |
-| **核心自动化框架** | `uiautomator2` | Google官方UI测试框架的Python封装，稳定、强大，用于驱动Android设备。 |
-| **设备连接与管理** | `adbutils` | `uiautomator2`的依赖库，封装了ADB（Android调试桥）命令，用于设备发现、应用安装、文件传输等。 |
-| **UI元素定位** | `weditor` / `uiautodev` | 基于Web的UI查看器，可以实时查看手机屏幕，并获取UI控件的`resource-id`、`text`、`xpath`等属性，是RPA脚本编写的关键辅助工具。 |
-| **编程语言** | Python 3 | 简单易学，拥有强大的生态系统，是自动化脚本编写的首选语言。 |
-| **运行环境** | 物理Android手机 / Android模拟器 | 脚本需要在一个真实的Android环境中运行，模拟器（如MuMu、雷电）或云手机均可。 |
+### 第一步：编译安装 Android 端
 
-## 环境准备与部署指南
-
-### 1. 软件依赖
-
-- **Python 3.8+**
-- **ADB (Android Debug Bridge)**: 确保已安装并配置到系统环境变量。可以从 [Android SDK Platform Tools](https://developer.android.com/studio/releases/platform-tools) 下载。
-
-### 2. 安装Python库
-
-在项目根目录下，运行以下命令安装所有必要的Python库：
+**环境要求：**
+- Android Studio Hedgehog+
+- JDK 17
+- Android 7.0+ 设备（物理手机或云手机）
+- 企业微信 4.1.x ~ 5.x
 
 ```bash
-# 建议在虚拟环境中安装
-# python -m venv venv
-# source venv/bin/activate  (Linux/macOS)
-# venv\Scripts\activate  (Windows)
+# 1. 克隆项目
+git clone https://github.com/MrRobot2658/wechat-rpa-demo.git
 
+# 2. 用 Android Studio 打开 android-app 目录
+# 3. Sync Gradle，然后 Build -> Build APK(s)
+# 4. 安装 APK 到手机
+```
+
+**手机端操作：**
+1. 打开 **WeChat RPA** 应用
+2. 点击「**开启无障碍服务**」→ 在系统设置中找到并启用 "WeChat RPA"
+3. 点击「**启动HTTP服务器**」
+4. 确认状态显示为 "🟢 系统就绪"
+5. 记录手机的 IP 地址（设置 → WLAN → 查看IP）
+
+### 第二步：部署 Python 服务端
+
+```bash
+cd server
+
+# 安装依赖
 pip install -r requirements.txt
+
+# 修改配置：将 DEVICE_API_BASE 改为手机的实际IP
+# 编辑 server/config/__init__.py
+
+# 启动服务端
+python -m uvicorn api.app:app --host 0.0.0.0 --port 8080
+
+# 访问 Swagger API 文档
+# http://localhost:8080/docs
 ```
 
-### 3. 准备Android设备
+### 第三步：使用 Python SDK 或 Demo
 
-- **开启开发者选项**：通常在“设置” -> “关于手机”中连续点击“版本号”7次。
-- **开启USB调试**：在“开发者选项”中找到并启用“USB调试”和“USB调试（安全设置）”。
-- **连接设备**：使用USB数据线将手机连接到电脑，并在手机弹出的授权窗口中选择“允许”。
-- **验证连接**：在电脑终端运行 `adb devices`，如果看到你的设备序列号和 `device` 状态，说明连接成功。
-
-### 4. 初始化 `uiautomator2`
-
-`uiautomator2` 需要在手机上安装一个名为 `atx-agent` 的守护进程来接收和执行指令。运行以下命令进行自动安装：
+**方式一：交互式 Demo**
 
 ```bash
-python -m uiautomator2 init
+cd server
+python demo.py
 ```
 
-此过程会自动下载并安装所需服务到手机。如果安装失败，请检查网络连接和手机权限。
+**方式二：直接使用 SDK**
 
-### 5. 校准UI控件ID（**非常重要**）
+```python
+from server.core import DeviceClient
 
-微信和企业微信的UI `resource-id` 会随着版本更新而频繁变化，直接运行Demo很可能会因为ID不匹配而失败。**在运行Demo前，必须先校准ID**。
+# 连接设备
+client = DeviceClient("http://192.168.1.100:9527")
 
-1.  在手机上，手动打开微信或企业微信，并导航到你想要自动化的页面（例如，与“文件传输助手”的聊天界面）。
-2.  运行校准工具：
+# 检查设备状态
+print(client.is_ready())        # True
+print(client.get_status())      # {'accessibility_enabled': True, ...}
 
-    ```bash
-    python tool_calibrate_ids.py
-    ```
+# 发送消息
+client.send_message("张三", "你好，这是自动发送的消息")
 
-3.  脚本会截取当前屏幕，并打印出所有带有 `resource-id` 的控件信息。
-4.  根据打印出的ID，**手动更新 `config/settings.py` 文件中 `WECHAT_IDS` 或 `WEWORK_IDS` 字典里的值**。
+# 读取最新消息
+result = client.read_messages("张三", count=5)
 
-    > **专业提示**：使用 `weditor` (通过 `python -m weditor` 启动) 可以更直观地在浏览器中实时查看和定位控件，强烈推荐在开发和调试时使用。
+# 创建群聊
+client.create_group("项目讨论群", ["张三", "李四", "王五"])
 
-## 运行Demo
+# 邀请入群
+client.invite_to_group("项目讨论群", ["赵六", "钱七"])
 
-项目提供了两个独立的Demo脚本，分别用于演示微信和企业微信的收发消息。
+# 获取群成员列表
+members = client.get_group_members("项目讨论群")
 
-### 微信Demo
+# 移除群成员
+client.remove_from_group("项目讨论群", ["钱七"])
 
-运行以下命令启动微信演示脚本：
+# 导出控件树（调试用）
+ui_tree = client.dump_ui_tree()
+```
+
+**方式三：直接调用 Android 端 HTTP API**
 
 ```bash
-python demo_wechat.py
+# 发送消息
+curl -X POST http://192.168.1.100:9527/api/send_message \
+  -H "Content-Type: application/json" \
+  -d '{"contact": "张三", "message": "你好"}'
+
+# 读取消息
+curl -X POST http://192.168.1.100:9527/api/read_messages \
+  -H "Content-Type: application/json" \
+  -d '{"contact": "张三", "count": 10}'
+
+# 创建群聊
+curl -X POST http://192.168.1.100:9527/api/create_group \
+  -H "Content-Type: application/json" \
+  -d '{"group_name": "测试群", "members": ["张三", "李四"]}'
+
+# 邀请入群
+curl -X POST http://192.168.1.100:9527/api/invite_to_group \
+  -H "Content-Type: application/json" \
+  -d '{"group_name": "测试群", "members": ["王五"]}'
+
+# 获取群成员
+curl -X POST http://192.168.1.100:9527/api/get_group_members \
+  -H "Content-Type: application/json" \
+  -d '{"group_name": "测试群"}'
+
+# 查看设备状态
+curl http://192.168.1.100:9527/api/status
+
+# 导出控件树
+curl http://192.168.1.100:9527/api/dump_ui
 ```
 
-脚本会提供菜单选项：
-- **发送消息**：自动打开微信，找到“文件传输助手”，并发送一条测试消息。
-- **读取最新消息**：打开与“文件传输助手”的聊天窗口，并读取最新的几条消息。
-- **监听消息并自动回复**：持续监听“文件传输助手”的新消息，并根据预设规则进行自动回复（按 `Ctrl+C` 停止）。
+## API 完整参考
 
-### 企业微信Demo
+### Android 端 API（端口 9527）
 
-运行以下命令启动企业微信演示脚本：
+| 方法 | 路径 | 参数 | 说明 |
+|------|------|------|------|
+| GET | `/api/status` | - | 获取服务状态 |
+| POST | `/api/send_message` | `contact`, `message` | 发送文本消息 |
+| POST | `/api/read_messages` | `contact`, `count` | 读取最新消息 |
+| POST | `/api/create_group` | `group_name`, `members[]` | 创建群聊 |
+| POST | `/api/invite_to_group` | `group_name`, `members[]` | 邀请入群 |
+| POST | `/api/remove_from_group` | `group_name`, `members[]` | 移除群成员 |
+| POST | `/api/get_group_members` | `group_name` | 获取群成员列表 |
+| GET | `/api/dump_ui` | - | 导出控件树（调试） |
+| GET | `/api/task_result/{id}` | - | 查询异步任务结果 |
+
+### Python 服务端 API（端口 8080）
+
+启动后访问 `http://localhost:8080/docs` 查看完整的 Swagger 交互文档。
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/devices` | 获取所有设备列表 |
+| GET | `/api/devices/online` | 获取在线设备 |
+| GET | `/api/devices/{id}/status` | 获取设备详细状态 |
+| POST | `/api/send_message` | 发送消息（指定设备） |
+| POST | `/api/read_messages` | 读取消息（指定设备） |
+| POST | `/api/create_group` | 创建群聊 |
+| POST | `/api/invite_to_group` | 邀请入群 |
+| POST | `/api/remove_from_group` | 移除群成员 |
+| POST | `/api/get_group_members` | 获取群成员 |
+| POST | `/api/broadcast` | 向所有在线设备广播消息 |
+| GET | `/api/devices/{id}/dump_ui` | 导出控件树 |
+
+## 控件ID校准指南
+
+企业微信每次版本更新都可能导致控件的 `resource-id` 发生变化，这是 UI 自动化方案的固有挑战。
+
+**校准步骤：**
 
 ```bash
-python demo_wework.py
+# 1. 在手机上打开企业微信，进入目标页面（如聊天页面）
+
+# 2. 调用导出控件树API
+curl http://192.168.1.100:9527/api/dump_ui | python -m json.tool
+
+# 3. 在输出的控件树中搜索目标元素
+#    例如搜索 "发送" 按钮、"搜索" 输入框等
+
+# 4. 更新 WeworkOperator.kt 中 WeworkIds 对象的常量值
+#    例如: const val CHAT_SEND_BTN = "com.tencent.wework:id/新ID"
+
+# 5. 重新编译安装 APK
 ```
 
-功能与微信Demo类似，操作对象同样是“文件传输助手”。
+**推荐工具：** 使用 Android Studio 的 **Layout Inspector** 或 `uiautomatorviewer` 可以更直观地查看控件层级。
 
-## 核心风险与注意事项
+## 核心技术原理
 
-1.  **UI易变性**：RPA方案的**最大弱点**。微信/企业微信的任何UI更新都可能导致`resource-id`或控件结构变化，从而使脚本失效。需要持续维护和更新ID配置。
-2.  **风控与封号**：模拟器、root设备、以及过于快速和规律的自动化操作都可能触发平台的风控策略，导致功能限制甚至封号。代码中的 `human_delay` 函数试图通过随机延迟模拟人类行为，但不能完全规避风险。
-3.  **异常处理**：健壮的RPA系统需要处理各种异常，如网络中断、应用崩溃、系统弹窗（权限申请、低电量提醒等）。本Demo仅为基础演示，未包含复杂的异常处理逻辑。
-4.  **多账号托管**：在单台PC上实现多账号托管通常需要借助**虚拟机**或**应用多开工具**来创建隔离的环境。在服务器端，则普遍采用“**云手机集群**”方案，通过在大量虚拟手机实例上运行RPA脚本来实现规模化托管，但这同样面临严峻的风控挑战。
+### AccessibilityService 工作机制
 
-## 结论
+```
+                    ┌──────────────────┐
+                    │   Android 系统    │
+                    │  AccessibilityManager
+                    └────────┬─────────┘
+                             │ 注册/回调
+                             ▼
+┌────────────────────────────────────────────────┐
+│         RpaAccessibilityService                 │
+│                                                  │
+│  onServiceConnected()                            │
+│    → 服务启动，获取系统级权限                       │
+│                                                  │
+│  onAccessibilityEvent(event)                     │
+│    → 监听窗口变化、内容变化等事件                   │
+│    → 记录当前前台应用包名和Activity                 │
+│                                                  │
+│  rootInActiveWindow                              │
+│    → 获取当前窗口的完整控件树                       │
+│    → 遍历树查找目标控件                            │
+│                                                  │
+│  performAction()                                 │
+│    → ACTION_CLICK: 模拟点击                       │
+│    → ACTION_SET_TEXT: 输入文本                     │
+│    → ACTION_SCROLL_FORWARD: 滚动                  │
+│                                                  │
+│  dispatchGesture()                               │
+│    → 模拟复杂手势（滑动、长按等）                   │
+│    → 当 performAction 失效时的兜底方案              │
+└────────────────────────────────────────────────┘
+```
 
-基于 `uiautomator2` 的RPA方案为微信和企业微信的自动化提供了一条技术上可行的路径。然而，由于其固有的脆弱性和合规风险，该方案仅适用于个人自动化探索或非关键性任务。对于任何需要高可靠性和安全性的企业级应用，**强烈建议优先使用官方提供的API接口**（如企业微信API、微信开放平台、公众号/小程序API）进行开发。
+### 关键类职责
+
+| 类 | 层级 | 职责 |
+|----|------|------|
+| `RpaAccessibilityService` | 系统层 | Android无障碍服务，提供控件查找和模拟操作的底层能力 |
+| `NodeHelper` | 工具层 | 封装常用的控件查找方法（按ID/文本/类名/滚动查找等） |
+| `WeworkOperator` | 业务层 | 封装企业微信的具体操作流程（搜索、发消息、拉群、群管理等） |
+| `TaskController` | 调度层 | 任务队列管理，确保UI操作串行执行，避免冲突 |
+| `HttpServerService` | 接口层 | 基于NanoHTTPD的HTTP服务器，将操作能力暴露为REST API |
+| `DeviceClient` | SDK层 | Python客户端，封装HTTP调用，提供简洁的Python API |
+| `DeviceManager` | 管理层 | 多设备管理，支持设备注册、状态监控、任务分发 |
+
+### 多账号托管架构
+
+```
+┌──────────────────────────────────────────┐
+│           Python 服务端 (FastAPI)          │
+│          DeviceManager 多设备管理          │
+└──┬──────────┬──────────┬────────────────┘
+   │          │          │
+   ▼          ▼          ▼
+┌──────┐  ┌──────┐  ┌──────┐
+│设备 1 │  │设备 2 │  │设备 N │    ← 物理手机 / 云手机
+│企微A  │  │企微B  │  │企微N  │
+│:9527  │  │:9527  │  │:9527  │
+└──────┘  └──────┘  └──────┘
+```
+
+每台设备独立运行 RPA App，Python 服务端通过 HTTP API 统一管理和调度。
+
+## 风险提示
+
+1. **封号风险**：自动化操作企业微信存在违反其用户协议的风险，可能导致账号被限制或封禁。
+2. **版本兼容**：企业微信版本更新会导致控件ID变化，需要定期校准 `WeworkIds`。
+3. **操作节奏**：代码中已内置随机延迟模拟人类操作节奏，但不能完全规避风控。
+4. **异常处理**：生产环境需要补充更完善的异常处理逻辑（弹窗处理、网络异常、应用崩溃恢复等）。
+5. **合规使用**：请遵守相关法律法规和平台规则，仅用于合法合规的场景。
+
+## 参考项目
+
+- [WorkTool](https://github.com/gallonyin/worktool) - 企微无障碍服务机器人（3k+ Stars，本项目架构参考）
+- [openatx/uiautomator2](https://github.com/openatx/uiautomator2) - Android UI自动化框架（旧方案参考）
+- [NanoHTTPD](https://github.com/NanoHttpd/nanohttpd) - 轻量级Java HTTP服务器
+
+## License
+
+Apache License 2.0

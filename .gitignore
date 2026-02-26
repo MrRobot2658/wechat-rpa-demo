@@ -1,30 +1,33 @@
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
 *.egg-info/
 dist/
 build/
 *.egg
-
-# 虚拟环境
 venv/
-.venv/
-env/
+.env
+
+# Android
+android-app/.gradle/
+android-app/build/
+android-app/app/build/
+android-app/local.properties
+android-app/.idea/
+*.apk
+*.aab
+*.iml
 
 # IDE
-.idea/
 .vscode/
+.idea/
 *.swp
 *.swo
 
-# 日志和截图
-*.log
-*.png
-*.xml
-calibrate_*/
-
-# 系统文件
+# OS
 .DS_Store
 Thumbs.db
+
+# Logs
+*.log
+ui_tree_*.txt
