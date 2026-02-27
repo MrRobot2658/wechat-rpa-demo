@@ -241,8 +241,8 @@ class RpaAccessibilityService : AccessibilityService() {
             clipboard.setPrimaryClip(ClipData.newPlainText("rpa_input", text))
             // 先聚焦
             node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
-            // 全选已有内容
-            node.performAction(AccessibilityNodeInfo.ACTION_SELECT_ALL)
+            // 全选已有内容（ACTION_SELECT_ALL = 0x20000，部分 SDK 中无此常量）
+            node.performAction(0x20000)
             // 粘贴
             node.performAction(AccessibilityNodeInfo.ACTION_PASTE)
         } catch (e: Exception) {
