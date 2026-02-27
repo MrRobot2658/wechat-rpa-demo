@@ -4,11 +4,17 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
-import com.wechatrpa.model.*
+import com.wechatrpa.model.AppTarget
+import com.wechatrpa.model.TaskRequest
+import com.wechatrpa.model.TaskResult
+import com.wechatrpa.model.TaskType
 import fi.iki.elonen.NanoHTTPD
 import org.json.JSONArray
 import org.json.JSONObject
@@ -44,27 +50,47 @@ class HttpServerService : Service() {
 
     private var httpServer: RpaHttpServer? = null
     private val taskController = TaskController()
+    private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildNotification())
+        // 持有一个 PARTIAL_WAKE_LOCK，避免后台/熄屏时系统休眠导致 HTTP 连接被断
+        val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
+        wakeLock = pm?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "$packageName:HttpServer")?.apply {
+            setReferenceCounted(false)
+            acquire(10 * 60 * 60 * 1000L) // 最长 10 小时，onDestroy 时 release
+        }
+        if (wakeLock != null) Log.i(TAG, "WakeLock 已持有，减少后台断连")
+
+        // Android 14+ 必须传入前台服务类型，否则会抛异常导致服务无法启动
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(NOTIFICATION_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        } else {
+            startForeground(NOTIFICATION_ID, buildNotification())
+        }
 
         // 启动任务控制器
         taskController.start()
 
-        // 启动HTTP服务器
-        try {
-            httpServer = RpaHttpServer(PORT, taskController)
-            httpServer?.start()
-            Log.i(TAG, "HTTP服务器已启动，端口: $PORT")
-        } catch (e: Exception) {
-            Log.e(TAG, "HTTP服务器启动失败: ${e.message}")
-        }
+        // 启动HTTP服务器（在后台线程避免阻塞，并显式绑定 0.0.0.0 以接受局域网连接）
+        Thread {
+            try {
+                httpServer = RpaHttpServer("0.0.0.0", PORT, taskController)
+                httpServer?.start()
+                Log.i(TAG, "HTTP服务器已启动，端口: $PORT，监听 0.0.0.0")
+            } catch (e: Exception) {
+                Log.e(TAG, "HTTP服务器启动失败: ${e.message}", e)
+            }
+        }.start()
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        wakeLock?.let {
+            if (it.isHeld) it.release()
+            wakeLock = null
+        }
         httpServer?.stop()
         taskController.stop()
         Log.i(TAG, "HTTP服务器已停止")
@@ -111,9 +137,10 @@ class HttpServerService : Service() {
      * 依赖：implementation 'org.nanohttpd:nanohttpd:2.3.1'
      */
     class RpaHttpServer(
+        hostname: String,
         port: Int,
         private val taskController: TaskController
-    ) : NanoHTTPD(port) {
+    ) : NanoHTTPD(hostname, port) {
 
         override fun serve(session: IHTTPSession): Response {
             val uri = session.uri
@@ -162,6 +189,12 @@ class HttpServerService : Service() {
                         handleGetGroupMembers(body)
                     }
 
+                    // 获取联系人列表
+                    uri == "/api/get_contact_list" && (method == Method.GET || method == Method.POST) -> {
+                        val body = if (method == Method.POST) parseBody(session) else JSONObject()
+                        handleGetContactList(body)
+                    }
+
                     // 导出控件树
                     uri == "/api/dump_ui" && method == Method.GET -> handleDumpUi()
 
@@ -176,6 +209,15 @@ class HttpServerService : Service() {
             } catch (e: Exception) {
                 Log.e("RpaHttpServer", "请求处理异常: ${e.message}", e)
                 jsonResponse(500, false, "Internal error: ${e.message}")
+            }
+        }
+
+        // --- 辅助：从 body 解析目标应用 ---
+        private fun appTargetFromBody(body: JSONObject): AppTarget {
+            return if (body.optString("app_type", "wework").equals("wechat", ignoreCase = true)) {
+                AppTarget.WECHAT
+            } else {
+                AppTarget.WEWORK
             }
         }
 
@@ -199,11 +241,12 @@ class HttpServerService : Service() {
             if (contact.isBlank() || message.isBlank()) {
                 return jsonResponse(400, false, "缺少参数: contact, message")
             }
-
+            val target = appTargetFromBody(body)
             val taskId = UUID.randomUUID().toString().take(8)
             val task = TaskRequest(
                 taskId = taskId,
                 taskType = TaskType.SEND_MESSAGE,
+                target = target,
                 params = mapOf("contact" to contact, "message" to message)
             )
             taskController.submitTask(task)
@@ -217,11 +260,12 @@ class HttpServerService : Service() {
             if (contact.isBlank()) {
                 return jsonResponse(400, false, "缺少参数: contact")
             }
-
+            val target = appTargetFromBody(body)
             val taskId = UUID.randomUUID().toString().take(8)
             val task = TaskRequest(
                 taskId = taskId,
                 taskType = TaskType.READ_MESSAGES,
+                target = target,
                 params = mapOf("contact" to contact, "count" to count)
             )
             taskController.submitTask(task)
@@ -237,11 +281,12 @@ class HttpServerService : Service() {
             if (members.isEmpty()) {
                 return jsonResponse(400, false, "缺少参数: members")
             }
-
+            val target = appTargetFromBody(body)
             val taskId = UUID.randomUUID().toString().take(8)
             val task = TaskRequest(
                 taskId = taskId,
                 taskType = TaskType.CREATE_GROUP,
+                target = target,
                 params = mapOf("group_name" to groupName, "members" to members)
             )
             taskController.submitTask(task)
@@ -257,11 +302,12 @@ class HttpServerService : Service() {
             if (groupName.isBlank() || members.isEmpty()) {
                 return jsonResponse(400, false, "缺少参数: group_name, members")
             }
-
+            val target = appTargetFromBody(body)
             val taskId = UUID.randomUUID().toString().take(8)
             val task = TaskRequest(
                 taskId = taskId,
                 taskType = TaskType.INVITE_TO_GROUP,
+                target = target,
                 params = mapOf("group_name" to groupName, "members" to members)
             )
             taskController.submitTask(task)
@@ -277,11 +323,12 @@ class HttpServerService : Service() {
             if (groupName.isBlank() || members.isEmpty()) {
                 return jsonResponse(400, false, "缺少参数: group_name, members")
             }
-
+            val target = appTargetFromBody(body)
             val taskId = UUID.randomUUID().toString().take(8)
             val task = TaskRequest(
                 taskId = taskId,
                 taskType = TaskType.REMOVE_FROM_GROUP,
+                target = target,
                 params = mapOf("group_name" to groupName, "members" to members)
             )
             taskController.submitTask(task)
@@ -294,16 +341,48 @@ class HttpServerService : Service() {
             if (groupName.isBlank()) {
                 return jsonResponse(400, false, "缺少参数: group_name")
             }
-
+            val target = appTargetFromBody(body)
             val taskId = UUID.randomUUID().toString().take(8)
             val task = TaskRequest(
                 taskId = taskId,
                 taskType = TaskType.GET_GROUP_MEMBERS,
+                target = target,
                 params = mapOf("group_name" to groupName)
             )
             taskController.submitTask(task)
 
             return jsonResponse(200, true, "任务已提交", JSONObject().put("task_id", taskId))
+        }
+
+        private fun handleGetContactList(body: JSONObject): Response {
+            val target = appTargetFromBody(body)
+            val taskId = UUID.randomUUID().toString().take(8)
+            val task = TaskRequest(
+                taskId = taskId,
+                taskType = TaskType.GET_CONTACT_LIST,
+                target = target
+            )
+            taskController.submitTask(task)
+            // 轮询等待执行完成（通讯录页加载+滚动采集可能需 30s～90s，尤其后台/冷启动）
+            val pollIntervalMs = 1000L
+            val timeoutMs = 90_000L
+            var result: TaskResult? = null
+            val start = System.currentTimeMillis()
+            while (System.currentTimeMillis() - start < timeoutMs) {
+                result = taskController.getResult(taskId)
+                if (result != null) break
+                Thread.sleep(pollIntervalMs)
+            }
+            if (result == null) result = taskController.getResult(taskId)
+            val data = when (val d = result?.data) {
+                is List<*> -> JSONArray(d.map { it.toString() })
+                else -> d
+            }
+            return if (result != null && result.success) {
+                jsonResponse(200, true, result.message, data)
+            } else {
+                jsonResponse(200, result?.success == true, result?.message ?: "获取联系人列表失败", data)
+            }
         }
 
         private fun handleDumpUi(): Response {

@@ -57,9 +57,11 @@ class RpaAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
+        // 声明需访问微信、企微的窗口，部分机型/Android 14+ 不声明则拿不到目标应用界面
+        serviceInfo?.packageNames = arrayOf("com.tencent.mm", "com.tencent.wework")
         // 隐藏软键盘，防止遮挡控件
         softKeyboardController.showMode = SHOW_MODE_HIDDEN
-        Log.i(TAG, "无障碍服务已连接，RPA引擎就绪")
+        Log.i(TAG, "无障碍服务已连接，RPA引擎就绪 (packageNames: 微信+企微)")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {

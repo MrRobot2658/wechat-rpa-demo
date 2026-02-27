@@ -39,6 +39,8 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         startStatusRefresh()
+        // 无障碍已开启时自动启动 HTTP 服务，保证获取通讯录等操作时 RPA 在后台可连
+        tryAutoStartHttpService()
     }
 
     override fun onPause() {
@@ -117,14 +119,26 @@ class MainActivity : AppCompatActivity() {
             addView(TextView(context).apply {
                 text = "\n使用步骤:\n" +
                     "1. 点击「开启无障碍服务」并在设置中启用\n" +
-                    "2. 点击「启动HTTP服务器」\n" +
-                    "3. 通过 http://<手机IP>:9527/api/ 调用API\n" +
-                    "\n提示: 确保手机和调用端在同一局域网内"
+                    "2. 返回本页后会自动启动 HTTP 服务（也可手动点击按钮）\n" +
+                    "3. 启动后可切到微信/后台，服务会持续运行，连接不断\n" +
+                    "4. 通过 http://<手机IP>:9527/api/ 或 PC 端服务调用 API\n" +
+                    "\n提示: 手机与调用端需在同一局域网"
                 textSize = 13f
                 setPadding(0, 32, 0, 0)
                 setTextColor(android.graphics.Color.DKGRAY)
             })
         }
+    }
+
+    /**
+     * 无障碍已开启时自动启动 HTTP 服务，保证后台可连（获取通讯录等无需保持本应用前台）
+     */
+    private fun tryAutoStartHttpService() {
+        if (RpaAccessibilityService.instance == null || httpServerRunning) return
+        val intent = Intent(this, HttpServerService::class.java)
+        startForegroundService(intent)
+        httpServerRunning = true
+        btnHttpServer.text = "停止HTTP服务器"
     }
 
     /**
@@ -159,6 +173,7 @@ class MainActivity : AppCompatActivity() {
     private fun updateStatus() {
         val service = RpaAccessibilityService.instance
         val isAccessibilityOn = service != null
+        if (isAccessibilityOn && !httpServerRunning) tryAutoStartHttpService()
 
         tvAccessibility.text = if (isAccessibilityOn) {
             "无障碍服务: ✅ 已开启"

@@ -1,7 +1,10 @@
 package com.wechatrpa.service
 
 import android.util.Log
-import com.wechatrpa.model.*
+import com.wechatrpa.model.AppTarget
+import com.wechatrpa.model.TaskRequest
+import com.wechatrpa.model.TaskResult
+import com.wechatrpa.model.TaskType
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
@@ -92,7 +95,7 @@ class TaskController {
                     if (contact.isBlank() || message.isBlank()) {
                         TaskResult(task.taskId, false, "缺少参数: contact 或 message")
                     } else {
-                        val r = weworkOperator.sendMessage(contact, message)
+                        val r = weworkOperator.sendMessage(contact, message, task.target)
                         r.copy(taskId = task.taskId)
                     }
                 }
@@ -103,7 +106,7 @@ class TaskController {
                     if (contact.isBlank()) {
                         TaskResult(task.taskId, false, "缺少参数: contact")
                     } else {
-                        val r = weworkOperator.readMessagesFrom(contact, count)
+                        val r = weworkOperator.readMessagesFrom(contact, count, task.target)
                         r.copy(taskId = task.taskId)
                     }
                 }
@@ -114,7 +117,7 @@ class TaskController {
                     if (members.isEmpty()) {
                         TaskResult(task.taskId, false, "缺少参数: members")
                     } else {
-                        val r = weworkOperator.createGroup(groupName, members)
+                        val r = weworkOperator.createGroup(groupName, members, task.target)
                         r.copy(taskId = task.taskId)
                     }
                 }
@@ -125,7 +128,7 @@ class TaskController {
                     if (groupName.isBlank() || members.isEmpty()) {
                         TaskResult(task.taskId, false, "缺少参数: group_name 或 members")
                     } else {
-                        val r = weworkOperator.inviteToGroup(groupName, members)
+                        val r = weworkOperator.inviteToGroup(groupName, members, task.target)
                         r.copy(taskId = task.taskId)
                     }
                 }
@@ -136,7 +139,7 @@ class TaskController {
                     if (groupName.isBlank() || members.isEmpty()) {
                         TaskResult(task.taskId, false, "缺少参数: group_name 或 members")
                     } else {
-                        val r = weworkOperator.removeFromGroup(groupName, members)
+                        val r = weworkOperator.removeFromGroup(groupName, members, task.target)
                         r.copy(taskId = task.taskId)
                     }
                 }
@@ -146,9 +149,14 @@ class TaskController {
                     if (groupName.isBlank()) {
                         TaskResult(task.taskId, false, "缺少参数: group_name")
                     } else {
-                        val r = weworkOperator.getGroupMembers(groupName)
+                        val r = weworkOperator.getGroupMembers(groupName, task.target)
                         r.copy(taskId = task.taskId)
                     }
+                }
+
+                TaskType.GET_CONTACT_LIST -> {
+                    val r = weworkOperator.getContactList(task.target)
+                    r.copy(taskId = task.taskId)
                 }
 
                 TaskType.DUMP_UI_TREE -> {

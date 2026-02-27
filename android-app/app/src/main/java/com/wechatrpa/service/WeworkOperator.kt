@@ -70,62 +70,72 @@ class WeworkOperator {
     // ====================================================================
 
     /**
-     * 启动企业微信应用
+     * 启动指定应用（微信或企业微信）
      */
-    fun launchWework(): Boolean {
+    fun launchApp(target: AppTarget): Boolean {
         return try {
             val ctx = service?.applicationContext ?: return false
-            val intent = ctx.packageManager.getLaunchIntentForPackage(AppTarget.WEWORK.packageName)
+            val intent = ctx.packageManager.getLaunchIntentForPackage(target.packageName)
             intent?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             ctx.startActivity(intent)
             Thread.sleep(DELAY_PAGE_LOAD)
-            Log.i(TAG, "企业微信已启动")
+            Log.i(TAG, "${target.label}已启动")
             true
         } catch (e: Exception) {
-            Log.e(TAG, "启动企业微信失败: ${e.message}")
+            Log.e(TAG, "启动${target.label}失败: ${e.message}")
             false
         }
     }
 
+    /** 兼容旧调用 */
+    fun launchWework(): Boolean = launchApp(AppTarget.WEWORK)
+
     /**
-     * 回到企业微信主页
+     * 回到主页（按 target 判断是否在对应应用主页）
+     * 若需启动应用，会等待目标应用主页出现（微信加载较慢时多等几秒）
      */
-    fun goToMainPage(): Boolean {
-        // 多次按返回键回到主页
+    fun goToMainPage(target: AppTarget = AppTarget.WEWORK): Boolean {
         for (i in 0..5) {
-            if (NodeHelper.isInMainPage()) {
+            if (NodeHelper.isInMainPage(target)) {
                 Log.i(TAG, "已回到主页")
                 return true
             }
             service?.pressBack()
             Thread.sleep(DELAY_SHORT)
         }
-        // 如果返回键无法回到主页，重新启动应用
-        return launchWework()
+        if (!launchApp(target)) return false
+        // 微信冷启动较慢，多等一会并轮询直到主页出现
+        if (target == AppTarget.WECHAT) {
+            for (w in 0..10) {
+                Thread.sleep(500)
+                if (NodeHelper.isInMainPage(target)) return true
+            }
+            Thread.sleep(2000)
+        }
+        return NodeHelper.isInMainPage(target)
     }
 
     /**
      * 搜索并打开与指定联系人/群组的聊天窗口
      */
-    fun openChat(contactName: String): Boolean {
-        Log.i(TAG, "搜索联系人/群组: $contactName")
-
-        // 确保在主页
-        goToMainPage()
+    fun openChat(contactName: String, target: AppTarget = AppTarget.WEWORK): Boolean {
+        Log.i(TAG, "搜索联系人/群组: $contactName (${target.label})")
+        goToMainPage(target)
         Thread.sleep(DELAY_SHORT)
 
-        // 点击搜索按钮
-        if (!NodeHelper.clickId(WeworkIds.SEARCH_BTN)) {
-            // 备选：点击文本"搜索"
-            if (!NodeHelper.clickText("搜索")) {
-                Log.e(TAG, "无法点击搜索按钮")
-                return false
-            }
+        // 微信无企微的 resource-id，优先用文案点击；企微可先用 ID
+        val searchOk = if (target == AppTarget.WECHAT) {
+            NodeHelper.clickText("搜索") || NodeHelper.clickId(WeworkIds.SEARCH_BTN)
+        } else {
+            NodeHelper.clickId(WeworkIds.SEARCH_BTN) || NodeHelper.clickText("搜索")
+        }
+        if (!searchOk) {
+            Log.e(TAG, "无法点击搜索按钮")
+            return false
         }
         Thread.sleep(DELAY_MEDIUM)
-
-        // 输入搜索关键词
-        if (!NodeHelper.inputToField(contactName, WeworkIds.SEARCH_INPUT)) {
+        val searchInputId = if (target == AppTarget.WEWORK) WeworkIds.SEARCH_INPUT else null
+        if (!NodeHelper.inputToField(contactName, searchInputId)) {
             if (!NodeHelper.inputToField(contactName)) {
                 Log.e(TAG, "无法输入搜索关键词")
                 service?.pressBack()
@@ -160,27 +170,30 @@ class WeworkOperator {
      * @param message 消息内容
      * @return 执行结果
      */
-    fun sendMessage(contactName: String, message: String): TaskResult {
-        Log.i(TAG, "发送消息给 '$contactName': ${message.take(50)}...")
-
-        // 打开聊天窗口
-        if (!openChat(contactName)) {
+    fun sendMessage(contactName: String, message: String, target: AppTarget = AppTarget.WEWORK): TaskResult {
+        Log.i(TAG, "发送消息给 '$contactName': ${message.take(50)}... (${target.label})")
+        if (!openChat(contactName, target)) {
             return TaskResult("", false, "无法打开与 '$contactName' 的聊天窗口")
         }
 
-        // 输入消息
-        if (!NodeHelper.inputToField(message, WeworkIds.CHAT_INPUT)) {
-            if (!NodeHelper.inputToField(message)) {
-                return TaskResult("", false, "消息输入失败")
-            }
+        // 微信没有企微的 ID，优先用“第一个输入框 + 发送文案”
+        val inputOk = if (target == AppTarget.WECHAT) {
+            NodeHelper.inputToField(message) || NodeHelper.inputToField(message, WeworkIds.CHAT_INPUT)
+        } else {
+            NodeHelper.inputToField(message, WeworkIds.CHAT_INPUT) || NodeHelper.inputToField(message)
+        }
+        if (!inputOk) {
+            return TaskResult("", false, "消息输入失败")
         }
         Thread.sleep(DELAY_SHORT)
 
-        // 点击发送
-        if (!NodeHelper.clickId(WeworkIds.CHAT_SEND_BTN)) {
-            if (!NodeHelper.clickText("发送")) {
-                return TaskResult("", false, "发送按钮点击失败")
-            }
+        val sendOk = if (target == AppTarget.WECHAT) {
+            NodeHelper.clickText("发送") || NodeHelper.clickContentDesc("发送") || NodeHelper.clickId(WeworkIds.CHAT_SEND_BTN)
+        } else {
+            NodeHelper.clickId(WeworkIds.CHAT_SEND_BTN) || NodeHelper.clickText("发送") || NodeHelper.clickContentDesc("发送")
+        }
+        if (!sendOk) {
+            return TaskResult("", false, "发送按钮点击失败")
         }
         Thread.sleep(DELAY_SHORT)
 
@@ -239,8 +252,8 @@ class WeworkOperator {
     /**
      * 读取指定联系人/群组的最新消息
      */
-    fun readMessagesFrom(contactName: String, count: Int = 10): TaskResult {
-        if (!openChat(contactName)) {
+    fun readMessagesFrom(contactName: String, count: Int = 10, target: AppTarget = AppTarget.WEWORK): TaskResult {
+        if (!openChat(contactName, target)) {
             return TaskResult("", false, "无法打开聊天窗口")
         }
         val messages = readMessages(count)
@@ -257,12 +270,10 @@ class WeworkOperator {
      * @param groupName 群名称
      * @param members 初始成员列表
      */
-    fun createGroup(groupName: String, members: List<String>): TaskResult {
+    fun createGroup(groupName: String, members: List<String>, target: AppTarget = AppTarget.WEWORK): TaskResult {
         Log.i(TAG, "创建群聊: $groupName, 成员: $members")
-
-        goToMainPage()
+        goToMainPage(target)
         Thread.sleep(DELAY_SHORT)
-
         // 点击右上角 "+" 按钮
         if (!NodeHelper.clickText("+") && !NodeHelper.clickId("com.tencent.wework:id/hfq")) {
             return TaskResult("", false, "无法点击创建按钮")
@@ -318,14 +329,12 @@ class WeworkOperator {
      * @param groupName 群名称
      * @param members 要邀请的成员列表
      */
-    fun inviteToGroup(groupName: String, members: List<String>): TaskResult {
+    fun inviteToGroup(groupName: String, members: List<String>, target: AppTarget = AppTarget.WEWORK): TaskResult {
         Log.i(TAG, "邀请入群: $groupName, 成员: $members")
 
-        // 打开群聊
-        if (!openChat(groupName)) {
+        if (!openChat(groupName, target)) {
             return TaskResult("", false, "无法打开群聊: $groupName")
         }
-
         // 点击右上角群设置按钮
         if (!NodeHelper.clickId(WeworkIds.CHAT_MORE_BTN)) {
             return TaskResult("", false, "无法打开群设置")
@@ -383,17 +392,14 @@ class WeworkOperator {
     /**
      * 从群中移除成员
      */
-    fun removeFromGroup(groupName: String, members: List<String>): TaskResult {
+    fun removeFromGroup(groupName: String, members: List<String>, target: AppTarget = AppTarget.WEWORK): TaskResult {
         Log.i(TAG, "移除群成员: $groupName, 成员: $members")
 
-        if (!openChat(groupName)) {
+        if (!openChat(groupName, target)) {
             return TaskResult("", false, "无法打开群聊")
         }
-
-        // 进入群设置
         NodeHelper.clickId(WeworkIds.CHAT_MORE_BTN)
         Thread.sleep(DELAY_PAGE_LOAD)
-
         // 点击删除成员按钮（-号）
         if (!NodeHelper.clickId(WeworkIds.GROUP_MEMBER_DEL)) {
             return TaskResult("", false, "无法找到删除成员按钮")
@@ -431,15 +437,12 @@ class WeworkOperator {
     /**
      * 获取群成员列表
      */
-    fun getGroupMembers(groupName: String): TaskResult {
-        if (!openChat(groupName)) {
+    fun getGroupMembers(groupName: String, target: AppTarget = AppTarget.WEWORK): TaskResult {
+        if (!openChat(groupName, target)) {
             return TaskResult("", false, "无法打开群聊")
         }
-
-        // 进入群设置
         NodeHelper.clickId(WeworkIds.CHAT_MORE_BTN)
         Thread.sleep(DELAY_PAGE_LOAD)
-
         // 收集所有成员名称
         val members = mutableListOf<String>()
         val textViews = NodeHelper.findByClassName("android.widget.TextView")
@@ -482,6 +485,58 @@ class WeworkOperator {
             }
         }
         return false
+    }
+
+    /** 通讯录页加载后等待时间（毫秒），列表渲染与网络可能较慢 */
+    private val DELAY_CONTACTS_LOAD = 5000L
+
+    /**
+     * 获取联系人列表（通讯录）
+     * 支持企业微信/微信：先进入通讯录 Tab，等待页面加载，可滚动多屏采集更多联系人
+     */
+    fun getContactList(target: AppTarget = AppTarget.WEWORK): TaskResult {
+        Log.i(TAG, "获取联系人列表 (${target.label})")
+        goToMainPage(target)
+        Thread.sleep(DELAY_MEDIUM)
+        // 优先用“等待出现再点击”，避免页面未就绪时点击失败（尤其后台/冷启动）
+        val entered = service?.waitAndClickText("通讯录", 15000) == true
+            || NodeHelper.clickText("通讯录")
+            || NodeHelper.clickId(WeworkIds.TAB_CONTACTS)
+        if (!entered) {
+            Log.e(TAG, "无法进入通讯录")
+            return TaskResult("", false, "无法进入通讯录页")
+        }
+        Thread.sleep(DELAY_CONTACTS_LOAD)
+
+        // 采集当前页 + 滚动多屏以加载更多（微信/企业微信通讯录多为列表懒加载）
+        val exclude = setOf(
+            "通讯录", "消息", "工作台", "我", "微信", "发现",
+            "搜索", "添加", "新的朋友", "群聊", "标签", "公众号",
+            "企业微信", "全部", "组织", "管理员",
+            "视频号", "小程序", "朋友圈", "扫一扫", "看一看"
+        )
+        val names = mutableSetOf<String>()
+        val maxScrolls = 5
+        for (scrollRound in 0..maxScrolls) {
+            val textViews = NodeHelper.findByClassName("android.widget.TextView")
+            for (tv in textViews) {
+                val text = tv.text?.toString()?.trim() ?: continue
+                if (text.length in 1..30 && text !in exclude && !text.all { it.isDigit() }) {
+                    names.add(text)
+                }
+            }
+            if (scrollRound < maxScrolls) {
+                val scrollable = NodeHelper.findScrollables().firstOrNull()
+                if (scrollable != null) {
+                    service?.scrollForward(scrollable)
+                    Thread.sleep(800)
+                } else break
+            }
+        }
+
+        val list = names.sorted()
+        Log.i(TAG, "联系人列表获取成功，共 ${list.size} 条")
+        return TaskResult("", true, "共 ${list.size} 个联系人", list)
     }
 
     /**

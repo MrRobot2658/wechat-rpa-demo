@@ -2,6 +2,7 @@ package com.wechatrpa.utils
 
 import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
+import com.wechatrpa.model.AppTarget
 import com.wechatrpa.service.RpaAccessibilityService
 
 /**
@@ -100,6 +101,18 @@ object NodeHelper {
     }
 
     /**
+     * 按 contentDescription 包含指定文案查找并点击（微信等发送按钮可能只有图标无文字）
+     */
+    fun clickContentDesc(desc: String): Boolean {
+        val node = service?.findAllNodes { it.contentDescription?.toString()?.contains(desc) == true }?.firstOrNull()
+        if (node == null) {
+            Log.w(TAG, "clickContentDesc: 未找到 contentDescription 包含 '$desc'")
+            return false
+        }
+        return service?.clickNode(node) ?: false
+    }
+
+    /**
      * 查找输入框并输入文本
      * @param resourceId 输入框的resource-id（可选，为空则查找第一个EditText）
      * @param text 要输入的文本
@@ -182,10 +195,16 @@ object NodeHelper {
     }
 
     /**
-     * 判断当前是否在主页（企业微信）
+     * 判断当前是否在主页
+     * @param target 微信：通讯录+发现/我；企业微信：消息+通讯录
      */
-    fun isInMainPage(): Boolean {
-        return findByExactText("消息") != null &&
-               findByExactText("通讯录") != null
+    fun isInMainPage(target: AppTarget = AppTarget.WEWORK): Boolean {
+        return when (target) {
+            AppTarget.WECHAT ->
+                findByExactText("通讯录") != null &&
+                    (findByExactText("发现") != null || findByExactText("我") != null)
+            AppTarget.WEWORK ->
+                findByExactText("消息") != null && findByExactText("通讯录") != null
+        }
     }
 }
